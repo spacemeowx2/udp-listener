@@ -82,7 +82,10 @@ pub struct UdpListener {
 
 impl UdpListener {
     pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpListener> {
-        let (rx, tx) = UdpSocket::bind(addr).await?.split();
+        Self::from_tokio(UdpSocket::bind(addr).await?)
+    }
+    pub fn from_tokio(udp: UdpSocket) -> io::Result<UdpListener> {
+        let (rx, tx) = udp.split();
         let (sender, receiver) = unbounded();
         let inner = Arc::new(Inner {
             sender,
@@ -94,6 +97,9 @@ impl UdpListener {
         Ok(UdpListener {
             receiver,
         })
+    }
+    pub fn from_std(socket: std::net::UdpSocket) -> io::Result<UdpListener> {
+        Self::from_tokio(UdpSocket::from_std(socket)?)
     }
     pub async fn next(&mut self) -> io::Result<UdpStream> {
         self.receiver.recv().await.map_err(other)
