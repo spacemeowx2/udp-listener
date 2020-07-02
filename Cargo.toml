@@ -1,9 +1,19 @@
 [package]
 name = "udp-listener"
+description = "Use UDP like TcpListener"
 version = "0.1.0"
 authors = ["spacelin <spacelin@tencent.com>"]
 edition = "2018"
+license = "MIT"
+documention = "https://docs.rs/udp-listener"
+repository = "https://github.com/spacemeowx2/udp-listener"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+tokio = { version = "0.2", default-features = false, features = [ "udp", "rt-core" ] }
+async-mutex = "1.1"
+async-channel = "1.1"
+
+[dev-dependencies]
+tokio = { version = "0.2", features = [ "full" ] }
