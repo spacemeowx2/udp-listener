@@ -1,10 +1,13 @@
-use tokio::net::{ToSocketAddrs, UdpSocket, udp::{SendHalf, RecvHalf}};
-use std::io;
-use std::sync::{Arc};
-use std::net::SocketAddr;
-use std::collections::HashMap;
+#![warn(missing_debug_implementations, rust_2018_idioms)]
+
+use async_channel::{unbounded, Receiver, Sender, TrySendError};
 use async_mutex::Mutex;
-use async_channel::{unbounded, Sender, Receiver, TrySendError};
+use std::collections::HashMap;
+use std::io;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::fmt;
+use tokio::net::{udp, ToSocketAddrs, UdpSocket};
 
 type Packet = Vec<u8>;
 
@@ -14,8 +17,8 @@ fn other<E: std::error::Error + Send + Sync + 'static>(e: E) -> io::Error {
 
 struct Inner {
     sender: Sender<UdpStream>,
-    rx: Mutex<RecvHalf>,
-    tx: Mutex<SendHalf>,
+    rx: Mutex<udp::RecvHalf>,
+    tx: Mutex<udp::SendHalf>,
     children: Mutex<HashMap<SocketAddr, Sender<Packet>>>,
 }
 
@@ -32,16 +35,10 @@ impl Inner {
 
             let mut children = self.children.lock().await;
             let sender = match children.get(&addr) {
-                Some(sender) => {
-                    sender.clone()
-                }
+                Some(sender) => sender.clone(),
                 None => {
                     let (tx, rx) = unbounded();
-                    let stream = UdpStream {
-                        receiver: rx,
-                        inner: self.clone(),
-                        target: addr,
-                    };
+                    let stream = UdpStream::new(self.clone(), addr, rx);
                     children.insert(addr, tx.clone());
                     self.sender.try_send(stream).map_err(other)?;
                     tx
@@ -52,22 +49,37 @@ impl Inner {
                 Err(TrySendError::Closed(_)) => {
                     children.remove(&addr);
                 }
-                _ => unreachable!()
+                _ => unreachable!(),
             };
         }
     }
 }
 
-pub struct UdpStream {
-    receiver: Receiver<Packet>,
+pub struct SendHalf {
     inner: Arc<Inner>,
     target: SocketAddr,
 }
 
-impl UdpStream {
+impl fmt::Debug for SendHalf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SendHalf")
+            .field("target", &self.target)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct RecvHalf {
+    receiver: Receiver<Packet>,
+}
+
+impl SendHalf {
     pub async fn send(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.inner.send_to(buf, &self.target).await
     }
+}
+
+impl RecvHalf {
     pub async fn recv(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let p = self.receiver.recv().await.map_err(other)?;
         let len = std::cmp::min(buf.len(), p.len());
@@ -76,8 +88,47 @@ impl UdpStream {
     }
 }
 
+pub struct UdpStream {
+    tx: SendHalf,
+    rx: RecvHalf,
+}
+
+impl fmt::Debug for UdpStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UdpStream")
+            .field("target", &self.tx.target)
+            .finish()
+    }
+}
+
+impl UdpStream {
+    fn new(inner: Arc<Inner>, target: SocketAddr, receiver: Receiver<Packet>) -> UdpStream {
+        UdpStream {
+            tx: SendHalf { inner, target },
+            rx: RecvHalf { receiver },
+        }
+    }
+    pub async fn send(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.tx.send(buf).await
+    }
+    pub async fn recv(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.rx.recv(buf).await
+    }
+    pub fn split(self) -> (RecvHalf, SendHalf) {
+        (self.rx, self.tx)
+    }
+}
+
+
 pub struct UdpListener {
     receiver: Receiver<UdpStream>,
+}
+
+impl fmt::Debug for UdpListener {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UdpListener")
+            .finish()
+    }
 }
 
 impl UdpListener {
@@ -94,9 +145,7 @@ impl UdpListener {
             children: Mutex::new(HashMap::new()),
         });
         tokio::spawn(inner.clone().serve());
-        Ok(UdpListener {
-            receiver,
-        })
+        Ok(UdpListener { receiver })
     }
     pub fn from_std(socket: std::net::UdpSocket) -> io::Result<UdpListener> {
         Self::from_tokio(UdpSocket::from_std(socket)?)

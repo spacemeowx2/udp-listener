@@ -1,7 +1,7 @@
 [package]
 name = "udp-listener"
 description = "Use UDP like TcpListener"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["spacelin <spacelin@tencent.com>"]
 edition = "2018"
 license = "MIT"
